@@ -11,9 +11,39 @@ let videoNativeHeight = 0;
 let lastMouseFull = { x: 0, y: 0 };
 
 // --- Agent icon matching state ---
-let agentRefs = []; // [{ name, width, height, histogram: Float32Array }]
-let lastAgentResult = null; // latched: { left: [...], right: [...], ts }
-const AGENT_SLOTS = 5;
+let agentRefs = [];
+let lastAgentResult = null;
+
+// --- Tesseract: one shared worker, lazy-initialised ---
+let tesseractWorker = null;
+let tesseractReady = false;
+let tesseractBusy = false;
+
+async function getTesseractWorker() {
+  if (tesseractWorker) return tesseractWorker;
+  tesseractWorker = await Tesseract.createWorker('eng', 1, {
+    tessedit_char_whitelist: '0123456789:OT',
+    tessedit_pageseg_mode: '7', // single text line
+  });
+  tesseractReady = true;
+  return tesseractWorker;
+}
+
+// Separate single-digit worker for score numbers (tighter whitelist, faster).
+let scoreWorker = null;
+let scoreWorkerReady = false;
+
+async function getScoreWorker() {
+  if (scoreWorker) return scoreWorker;
+  scoreWorker = await Tesseract.createWorker('eng', 1, {
+    tessedit_char_whitelist: '0123456789',
+    tessedit_pageseg_mode: '7',
+  });
+  scoreWorkerReady = true;
+  return scoreWorker;
+}
+
+// --- Picker / startup ---
 
 async function showPicker() {
   const sources = await window.bridge.getSources();
@@ -38,6 +68,10 @@ async function selectSource(sourceId) {
 async function start(sourceId) {
   cfg = await window.bridge.getConfig();
   await loadAgentReferences();
+
+  // Warm up both workers in background so first tick doesn't stall.
+  getTesseractWorker().catch((e) => console.warn('[tesseract timer]', e));
+  getScoreWorker().catch((e) => console.warn('[tesseract score]', e));
 
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: false,
@@ -64,21 +98,19 @@ async function start(sourceId) {
 function printStatus(extra) {
   statusEl.textContent =
     `Capturing ${videoNativeWidth}x${videoNativeHeight}\n` +
-    `Hover + press C: log x/y for calibration (health bars, scoreboard region - see README).\n` +
-    `Press R: re-fetch agent icons from valorant-api.com (e.g. after a new agent drops).\n` +
-    `Press D: dump row0's captured crop to gameoverlay/debug/row0_captured.png for visual inspection.\n` +
+    `Hover + press C: log x/y for calibration.\n` +
+    `Press R: re-fetch agent icons from valorant-api.com.\n` +
+    `Press D: dump debug crops (timer, scores, agent row0) to gameoverlay/debug/.\n` +
     `Loaded ${agentRefs.length} agent reference icon(s) (auto-fetched + cached).\n` +
     (extra ? extra + '\n' : '');
 }
 
 // --- Calibration ---
-// Map mouse position over the small preview <video> to native screen pixel coords.
+
 video.addEventListener('mousemove', (e) => {
   const rect = video.getBoundingClientRect();
-  const xRatio = (e.clientX - rect.left) / rect.width;
-  const yRatio = (e.clientY - rect.top) / rect.height;
-  lastMouseFull.x = Math.round(xRatio * videoNativeWidth);
-  lastMouseFull.y = Math.round(yRatio * videoNativeHeight);
+  lastMouseFull.x = Math.round((e.clientX - rect.left) / rect.width * videoNativeWidth);
+  lastMouseFull.y = Math.round((e.clientY - rect.top) / rect.height * videoNativeHeight);
 });
 
 window.addEventListener('keydown', (e) => {
@@ -94,38 +126,38 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-// Dumps row 0's currently-captured icon crop, plus the cached reference PNG
-// for the agent it most recently matched (or the first loaded reference if
-// none), to gameoverlay/debug/*.png - so you can open both side-by-side and
-// see directly whether the calibrated region is landing on a face, and
-// whether it visually resembles the API-sourced reference icon style.
 async function dumpDebugCrops() {
-  if (!videoNativeWidth || !cfg) {
-    printStatus('Nothing to dump yet - capture not running.');
-    return;
-  }
-  const { x, y, iconWidth, iconHeight } = cfg.agentIcons;
+  if (!videoNativeWidth || !cfg) { printStatus('Nothing to dump yet.'); return; }
   fullCtx.drawImage(video, 0, 0, videoNativeWidth, videoNativeHeight);
 
-  const crop = document.createElement('canvas');
-  crop.width = iconWidth;
-  crop.height = iconHeight;
-  crop.getContext('2d').drawImage(fullCanvas, Math.round(x), Math.round(y), iconWidth, iconHeight, 0, 0, iconWidth, iconHeight);
-  const cropDataUrl = crop.toDataURL('image/png');
-  const cropPath = await window.bridge.saveDebugCrop('row0_captured', cropDataUrl);
+  async function dump(label, x, y, w, h) {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    c.getContext('2d').drawImage(fullCanvas, Math.round(x), Math.round(y), w, h, 0, 0, w, h);
+    return window.bridge.saveDebugCrop(label, c.toDataURL('image/png'));
+  }
 
-  printStatus(`Saved captured crop -> ${cropPath}\nCompare it against any file in assets/agents/*.png (these are the references).`);
+  const tc = cfg.roundTimer;
+  const sc = cfg.roundScore;
+  const ic = cfg.agentIcons;
+
+  const [t, sl, sr, a] = await Promise.all([
+    dump('timer_captured',     tc.x, tc.y, tc.width, tc.height),
+    dump('score_def_captured', sc.def.x, sc.def.y, sc.def.width, sc.def.height),
+    dump('score_atk_captured', sc.atk.x, sc.atk.y, sc.atk.width, sc.atk.height),
+    dump('row0_captured',      ic.x, ic.y, ic.iconWidth, ic.iconHeight),
+  ]);
+
+  printStatus(`Debug crops saved:\n  ${t}\n  ${sl}\n  ${sr}\n  ${a}\nCheck timer/score crops: digits should be tightly framed, white on dark.`);
 }
 
 async function refreshAgentIcons() {
-  printStatus('Refetching agent icons from valorant-api.com...');
+  printStatus('Refetching agent icons...');
   const status = await window.bridge.refreshAgentIcons();
   await loadAgentReferences();
-  if (status.error) {
-    printStatus(`Refresh finished with a warning: ${status.error}`);
-  } else {
-    printStatus(`Refreshed: ${status.agentNames.length} agent icon(s) loaded.`);
-  }
+  printStatus(status.error
+    ? `Refresh warning: ${status.error}`
+    : `Refreshed: ${status.agentNames.length} icon(s).`);
 }
 
 async function loadAgentReferences() {
@@ -138,193 +170,221 @@ async function loadAgentReferences() {
   }));
 }
 
-// --- Health bar parsing (unchanged) ---
+// --- Health bar parsing ---
 
 function classifyPixel(r, g, b, det) {
   const maxc = Math.max(r, g, b);
   const minc = Math.min(r, g, b);
   const brightness = (r + g + b) / 3;
-
   if (r - g > det.redDominance && r - b > det.redDominance) return 'fill';
   if (g - r > det.greenDominance && g - b > det.greenDominance) return 'fill';
   if (brightness >= det.fillBrightnessMin && maxc - minc < det.greySaturationMax) return 'fill';
-  if (
-    maxc - minc < det.greySaturationMax &&
-    brightness >= det.greyBrightnessMin &&
-    brightness <= det.greyBrightnessMax
-  ) {
-    return 'grey';
-  }
+  if (maxc - minc < det.greySaturationMax && brightness >= det.greyBrightnessMin && brightness <= det.greyBrightnessMax) return 'grey';
   return 'other';
 }
 
 function readSlotHealth(imageData, det) {
   const { data, width } = imageData;
   const rowY = Math.floor(imageData.height / 2);
-
-  let fillCount = 0;
-  let i = 0;
+  let fillCount = 0, i = 0;
   for (; i < width; i++) {
     const idx = (rowY * width + i) * 4;
-    const cls = classifyPixel(data[idx], data[idx + 1], data[idx + 2], det);
-    if (cls !== 'fill') break;
+    if (classifyPixel(data[idx], data[idx+1], data[idx+2], det) !== 'fill') break;
     fillCount++;
   }
-
   let greyCount = 0;
   for (; i < width; i++) {
     const idx = (rowY * width + i) * 4;
-    const cls = classifyPixel(data[idx], data[idx + 1], data[idx + 2], det);
-    if (cls === 'grey') greyCount++;
+    if (classifyPixel(data[idx], data[idx+1], data[idx+2], det) === 'grey') greyCount++;
   }
-
   const recognized = fillCount + greyCount;
   if (recognized < width * det.deadRatioThreshold) return 0;
   return Math.round((fillCount / recognized) * 100);
 }
 
 function parseSide(sideKey, sideCfg, det) {
-  const results = [];
   const { x, y, width, height, slots, gap } = sideCfg;
   const slotWidth = (width - gap * (slots - 1)) / slots;
-
-  for (let i = 0; i < slots; i++) {
+  return Array.from({ length: slots }, (_, i) => {
     const slotX = Math.round(x + i * (slotWidth + gap));
     const imageData = fullCtx.getImageData(slotX, Math.round(y), Math.round(slotWidth), Math.round(height));
     const pct = readSlotHealth(imageData, det);
-    results.push({ side: sideKey, slot: i, health: pct, alive: pct > 2 });
+    return { side: sideKey, slot: i, health: pct, alive: pct > 2 };
+  });
+}
+
+// --- OCR helpers ---
+
+// Upscale + threshold a region for Tesseract. White digits on black.
+function buildOcrCanvas(x, y, w, h, scale, brightnessThreshold) {
+  const c = document.createElement('canvas');
+  c.width = w * scale;
+  c.height = h * scale;
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(fullCanvas, Math.round(x), Math.round(y), w, h, 0, 0, c.width, c.height);
+  const id = ctx.getImageData(0, 0, c.width, c.height);
+  const d = id.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = (d[i] + d[i+1] + d[i+2]) / 3 >= brightnessThreshold ? 255 : 0;
+    d[i] = d[i+1] = d[i+2] = v; d[i+3] = 255;
   }
-  return results;
+  ctx.putImageData(id, 0, 0);
+  return c;
+}
+
+// Parse "M:SS" or "MM:SS" or "OT", return null on garbage.
+function parseTimerText(raw) {
+  const s = raw.replace(/[^0-9:OT]/gi, '').trim();
+  if (!s) return null;
+  if (/^OT$/i.test(s)) return 'OT';
+  const m = s.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const mins = parseInt(m[1], 10), secs = parseInt(m[2], 10);
+  if (mins > 9 || secs > 59) return null;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+// Parse a single score digit (0-13). Returns null on garbage.
+function parseScoreText(raw) {
+  const s = raw.replace(/\D/g, '').trim();
+  if (!s) return null;
+  const n = parseInt(s, 10);
+  if (isNaN(n) || n < 0 || n > 13) return null;
+  return n;
+}
+
+// --- Timer OCR (async, non-blocking) ---
+
+let lastTimerResult = null;
+let timerBusy = false;
+
+async function parseRoundTimerAsync() {
+  if (!tesseractReady || timerBusy) return;
+  const tc = cfg.roundTimer;
+  timerBusy = true;
+  try {
+    const canvas = buildOcrCanvas(tc.x, tc.y, tc.width, tc.height, tc.scale || 3, tc.brightnessThreshold ?? 150);
+    const worker = await getTesseractWorker();
+    const { data: { text } } = await worker.recognize(canvas);
+    const parsed = parseTimerText(text);
+    if (parsed !== null) lastTimerResult = parsed;
+    window.bridge.sendTimerUpdate({ timer: parsed ?? lastTimerResult, raw: text.trim(), ts: Date.now() });
+  } catch (e) {
+    console.warn('[timer ocr]', e);
+  } finally {
+    timerBusy = false;
+  }
+}
+
+// --- Score OCR (async, non-blocking, runs both sides in parallel) ---
+
+let scoreBusy = false;
+let lastScoreResult = { def: 0, atk: 0 };
+
+async function parseRoundScoreAsync() {
+  if (!scoreWorkerReady || scoreBusy) return;
+  const sc = cfg.roundScore;
+  scoreBusy = true;
+  try {
+    const worker = await getScoreWorker();
+    const scale = sc.scale || 3;
+    const thresh = sc.brightnessThreshold ?? 150;
+
+    // Run both sides in parallel.
+    const [defResult, atkResult] = await Promise.all([
+      worker.recognize(buildOcrCanvas(sc.def.x, sc.def.y, sc.def.width, sc.def.height, scale, thresh)),
+      worker.recognize(buildOcrCanvas(sc.atk.x, sc.atk.y, sc.atk.width, sc.atk.height, scale, thresh)),
+    ]);
+
+    const defScore = parseScoreText(defResult.data.text);
+    const atkScore = parseScoreText(atkResult.data.text);
+
+    if (defScore !== null) lastScoreResult.def = defScore;
+    if (atkScore !== null) lastScoreResult.atk = atkScore;
+
+    window.bridge.sendScoreUpdate({
+      def: lastScoreResult.def,
+      atk: lastScoreResult.atk,
+      ts: Date.now(),
+    });
+  } catch (e) {
+    console.warn('[score ocr]', e);
+  } finally {
+    scoreBusy = false;
+  }
 }
 
 // --- Agent icon template matching ---
 
-// Buckets RGB into a small NxNxN grid and returns a normalized histogram.
-// Tolerant of minor scaling/compression noise compared to raw pixel diffing,
-// while still distinguishing 24 visually-distinct agent icons cleanly.
 function buildHistogram(imageData, buckets) {
   return buildHistogramFromBitmap(imageData.data, imageData.width, imageData.height, buckets, true);
 }
 
-// isRGBA: true for canvas ImageData (RGBA byte order).
-// false for Electron NativeImage bitmaps, which are BGRA on Windows/most platforms.
-// Pixels with alpha=0 are skipped entirely (not bucketed as "black") - this
-// matters because the API-sourced reference icons have transparent
-// backgrounds, while captured scoreboard regions are always fully opaque.
-// Counting transparent pixels as black would give every reference icon a
-// fake shared "black background" spike that real captures don't have,
-// diluting how distinguishable agents are from each other.
 function buildHistogramFromBitmap(data, width, height, buckets, isRGBA = false) {
   const hist = new Float32Array(buckets * buckets * buckets);
   const step = 256 / buckets;
   let total = 0;
-
   for (let i = 0; i < width * height; i++) {
     const idx = i * 4;
     let r, g, b, a;
-    if (isRGBA) {
-      r = data[idx];
-      g = data[idx + 1];
-      b = data[idx + 2];
-      a = data[idx + 3];
-    } else {
-      // BGRA
-      b = data[idx];
-      g = data[idx + 1];
-      r = data[idx + 2];
-      a = data[idx + 3];
-    }
-    if (a < 16) continue; // skip (near-)transparent pixels
-
-    const bucketR = Math.min(buckets - 1, Math.floor(r / step));
-    const bucketG = Math.min(buckets - 1, Math.floor(g / step));
-    const bucketB = Math.min(buckets - 1, Math.floor(b / step));
-    hist[bucketR * buckets * buckets + bucketG * buckets + bucketB]++;
+    if (isRGBA) { r = data[idx]; g = data[idx+1]; b = data[idx+2]; a = data[idx+3]; }
+    else        { b = data[idx]; g = data[idx+1]; r = data[idx+2]; a = data[idx+3]; }
+    if (a < 16) continue;
+    const bR = Math.min(buckets-1, Math.floor(r/step));
+    const bG = Math.min(buckets-1, Math.floor(g/step));
+    const bB = Math.min(buckets-1, Math.floor(b/step));
+    hist[bR*buckets*buckets + bG*buckets + bB]++;
     total++;
   }
-
-  if (total > 0) {
-    for (let i = 0; i < hist.length; i++) hist[i] /= total;
-  }
+  if (total > 0) for (let i = 0; i < hist.length; i++) hist[i] /= total;
   return hist;
 }
 
-// Sum of absolute differences between two normalized histograms.
-// Range: 0 (identical distribution) to 2 (completely disjoint).
 function histogramDistance(a, b) {
   let sum = 0;
   for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]);
   return sum;
 }
 
-// Set true temporarily to log the top-3 closest matches + distances for
-// row 0 on every tick to the devtools console (Ctrl+Shift+I in the capture
-// window) - useful for diagnosing why matching picks the wrong / same
-// agent repeatedly. Turn back off once things look right; it's noisy.
-const DEBUG_AGENT_MATCH = true;
+const DEBUG_AGENT_MATCH = false;
 let debugTickCount = 0;
 
 function matchAgent(imageData, buckets, threshold, debugLabel) {
   if (agentRefs.length === 0) return { name: null, confidence: 0 };
   const hist = buildHistogram(imageData, buckets);
-
-  const scored = agentRefs.map((ref) => ({
-    name: ref.name,
-    dist: histogramDistance(hist, ref.histogram),
-  }));
+  const scored = agentRefs.map((ref) => ({ name: ref.name, dist: histogramDistance(hist, ref.histogram) }));
   scored.sort((a, b) => a.dist - b.dist);
-
   if (DEBUG_AGENT_MATCH && debugLabel === 'row0' && debugTickCount % 20 === 0) {
-    console.log(
-      `[match ${debugLabel}] top3:`,
-      scored.slice(0, 3).map((s) => `${s.name}=${s.dist.toFixed(3)}`).join(', '),
-      `| threshold=${threshold}`
-    );
+    console.log(`[match ${debugLabel}] top3:`, scored.slice(0,3).map(s=>`${s.name}=${s.dist.toFixed(3)}`).join(', '), `| threshold=${threshold}`);
   }
   if (debugLabel === 'row0') debugTickCount++;
-
   const best = scored[0];
   if (!best || best.dist > threshold) return { name: null, confidence: 0 };
-  const confidence = Math.max(0, 1 - best.dist / threshold);
-  return { name: best.name, confidence };
+  return { name: best.name, confidence: Math.max(0, 1 - best.dist / threshold) };
 }
 
-// Crude "is the scoreboard actually open" check: sample variance across the
-// whole scoreboard region. A closed scoreboard shows either the game world
-// (low-structure compared to a dense UI) or nothing in that exact spot -
-// in practice this is tuned via agentIcons.tabOpenMinVariance in config,
-// same way health-bar thresholds are tuned via colors.* in config.
 function regionLooksLikeUI(imageData, minVariance) {
   const { data } = imageData;
-  let sum = 0;
-  let sumSq = 0;
+  let sum = 0, sumSq = 0;
   const n = data.length / 4;
   for (let i = 0; i < n; i++) {
-    const idx = i * 4;
-    const brightness = (data[idx] + data[idx + 1] + data[idx + 2]) / 3;
-    sum += brightness;
-    sumSq += brightness * brightness;
+    const b = (data[i*4] + data[i*4+1] + data[i*4+2]) / 3;
+    sum += b; sumSq += b * b;
   }
   const mean = sum / n;
-  const variance = sumSq / n - mean * mean;
-  return Math.sqrt(variance) >= minVariance;
+  return Math.sqrt(sumSq / n - mean * mean) >= minVariance;
 }
 
-// Reads all 10 rows from a single vertical list: rows 0-4 are your team,
-// rows 5-9 are the enemy team, separated by the DEF/ATK divider bar.
-// (Calibrated against a real 1920x1080 Tab-scoreboard screenshot - this is
-// ONE column of 10 stacked rows, not two side-by-side team columns.)
 function readAgentRows(ic) {
   const x = Math.round(ic.x);
   const results = [];
-
   for (let row = 0; row < ic.rowsPerTeam; row++) {
     const y = Math.round(ic.y + row * ic.rowGap);
     const imageData = fullCtx.getImageData(x, y, ic.iconWidth, ic.iconHeight);
     const { name, confidence } = matchAgent(imageData, ic.histogramBuckets, ic.matchThreshold, row === 0 ? 'row0' : undefined);
     results.push({ row, team: 'mine', agent: name, confidence });
   }
-
   const enemyRow0Y = ic.y + (ic.rowsPerTeam - 1) * ic.rowGap + ic.rowGap + ic.blockGapExtra;
   for (let row = 0; row < ic.rowsPerTeam; row++) {
     const y = Math.round(enemyRow0Y + row * ic.rowGap);
@@ -332,31 +392,20 @@ function readAgentRows(ic) {
     const { name, confidence } = matchAgent(imageData, ic.histogramBuckets, ic.matchThreshold);
     results.push({ row, team: 'enemy', agent: name, confidence });
   }
-
   return results;
 }
 
 function parseAgentIcons() {
   const ic = cfg.agentIcons;
-
-  // Probe just the first row's box as the "is Tab open" check - cheap, and
-  // if row 1 isn't showing UI, the rest of the list almost certainly isn't either.
   const probe = fullCtx.getImageData(Math.round(ic.x), Math.round(ic.y), ic.iconWidth, ic.iconHeight);
   const tabOpen = regionLooksLikeUI(probe, ic.tabOpenMinVariance);
-
   if (!tabOpen) {
-    // Latch: return the last known good result unchanged, flagged as stale,
-    // rather than guessing or blanking the overlay while Tab is released.
-    if (lastAgentResult) {
-      return { ...lastAgentResult, tabOpen: false, ts: Date.now() };
-    }
+    if (lastAgentResult) return { ...lastAgentResult, tabOpen: false, ts: Date.now() };
     return { rows: [], tabOpen: false, ts: Date.now() };
   }
-
   const rows = readAgentRows(ic);
-  const result = { rows, tabOpen: true, ts: Date.now() };
-  lastAgentResult = result;
-  return result;
+  lastAgentResult = { rows, tabOpen: true, ts: Date.now() };
+  return lastAgentResult;
 }
 
 // --- Main tick ---
@@ -366,12 +415,18 @@ function tick() {
   fullCtx.drawImage(video, 0, 0, videoNativeWidth, videoNativeHeight);
 
   const det = cfg.colors;
-  const atk = parseSide('atk', cfg.healthBars.atk, det);
-  const def = parseSide('def', cfg.healthBars.def, det);
-  window.bridge.sendHealthUpdate({ atk, def, ts: Date.now() });
+  window.bridge.sendHealthUpdate({
+    atk: parseSide('atk', cfg.healthBars.atk, det),
+    def: parseSide('def', cfg.healthBars.def, det),
+    ts: Date.now(),
+  });
 
-  const agentData = parseAgentIcons();
-  window.bridge.sendAgentUpdate(agentData);
+  window.bridge.sendAgentUpdate(parseAgentIcons());
+
+  // Both OCR calls are async and fire-and-forget.
+  // They share no state so running in parallel is safe.
+  parseRoundTimerAsync();
+  parseRoundScoreAsync();
 }
 
 showPicker().catch((err) => {
