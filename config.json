@@ -1,0 +1,32 @@
+{
+  "captureIntervalMs": 50,
+  "healthBars": {
+    "atk": {
+      "x": 1171,
+      "y": 76,
+      "width": 303,
+      "height": 6,
+      "slots": 5,
+      "gap": 27
+    },
+    "def": {
+      "x": 446,
+      "y": 76,
+      "width": 303,
+      "height": 6,
+      "slots": 5,
+      "gap": 27
+    }
+  },
+  "colors": {
+    "redDominance": 35,
+
+    "greenDominance": 20,
+
+    "fillBrightnessMin": 210,
+    "greySaturationMax": 18,
+    "greyBrightnessMin": 110,
+    "greyBrightnessMax": 205,
+    "deadRatioThreshold": 0.5
+  }
+}
