@@ -20,13 +20,24 @@
   },
   "colors": {
     "redDominance": 35,
-
     "greenDominance": 20,
-
     "fillBrightnessMin": 210,
     "greySaturationMax": 18,
     "greyBrightnessMin": 110,
     "greyBrightnessMax": 205,
     "deadRatioThreshold": 0.5
+  },
+  "agentIcons": {
+    "_comment": "Calibrated against a real 1920x1080 Tab-scoreboard screenshot. This is a SINGLE vertical list of 10 rows (your 5 teammates stacked above the 5 enemies, split by a DEF/ATK divider bar in the middle) - NOT two side-by-side team columns. x/y are the TOP-LEFT corner of row 1's icon box (top teammate) - getImageData()/drawImage() both treat x/y as top-left, not center, so this matters: y=342 here corresponds to a measured face-center of y=357 minus half of iconHeight (30/2=15). rowGap is the pitch between consecutive row top-left-y's within a 5-row block; blockGapExtra is the EXTRA vertical gap (beyond one normal rowGap) between row 5 (last teammate) and row 6 (first enemy), to account for the DEF/ATK divider bar. If your scoreboard differs (resolution, UI scale, or HUD layout option), recalibrate with hover + press C the same way as the health bars, then SUBTRACT half of iconHeight from whatever y you log if you're hovering over the center of a face like the README describes.",
+    "x": 577,
+    "y": 342,
+    "iconWidth": 24,
+    "iconHeight": 30,
+    "rowGap": 33.5,
+    "rowsPerTeam": 5,
+    "blockGapExtra": 61.5,
+    "matchThreshold": 0.35,
+    "tabOpenMinVariance": 8,
+    "histogramBuckets": 4
   }
 }
