@@ -28,7 +28,6 @@
     "deadRatioThreshold": 0.5
   },
   "agentIcons": {
-    "_comment": "Calibrated against a real 1920x1080 Tab-scoreboard screenshot. This is a SINGLE vertical list of 10 rows (your 5 teammates stacked above the 5 enemies, split by a DEF/ATK divider bar in the middle) - NOT two side-by-side team columns. x/y are the TOP-LEFT corner of row 1's icon box (top teammate) - getImageData()/drawImage() both treat x/y as top-left, not center, so this matters: y=342 here corresponds to a measured face-center of y=357 minus half of iconHeight (30/2=15). rowGap is the pitch between consecutive row top-left-y's within a 5-row block; blockGapExtra is the EXTRA vertical gap (beyond one normal rowGap) between row 5 (last teammate) and row 6 (first enemy), to account for the DEF/ATK divider bar. If your scoreboard differs (resolution, UI scale, or HUD layout option), recalibrate with hover + press C the same way as the health bars, then SUBTRACT half of iconHeight from whatever y you log if you're hovering over the center of a face like the README describes.",
     "x": 577,
     "y": 342,
     "iconWidth": 24,
@@ -36,8 +35,34 @@
     "rowGap": 33.5,
     "rowsPerTeam": 5,
     "blockGapExtra": 61.5,
-    "matchThreshold": 0.35,
-    "tabOpenMinVariance": 8,
+    "matchThreshold": 0.55,
+    "tabOpenMinVariance": 5,
     "histogramBuckets": 4
+  },
+  "roundTimer": {
+    "_comment": "Crop of the MM:SS digits inside the centre hexagon. Measured from a 1920x1080 screenshot. x/y is top-left; width/height should tightly contain only the digits, not the hex border. scale upscales before OCR - 3 works well for ~34px tall text. brightnessThreshold separates the white digits from the dark hex background.",
+    "x": 921,
+    "y": 30,
+    "width": 82,
+    "height": 38,
+    "scale": 3,
+    "brightnessThreshold": 150
+  },
+  "roundScore": {
+    "_comment": "Two score numbers sit either side of the timer hex - DEF (teal) on the left, ATK (red) on the right. Each is a single digit (0-13) in a small box. Same OCR pipeline as the timer but whitelist is digits only. scale 3 works well for ~34px tall text.",
+    "def": {
+      "x": 798,
+      "y": 30,
+      "width": 46,
+      "height": 38
+    },
+    "atk": {
+      "x": 1078,
+      "y": 30,
+      "width": 46,
+      "height": 38
+    },
+    "scale": 3,
+    "brightnessThreshold": 150
   }
 }
