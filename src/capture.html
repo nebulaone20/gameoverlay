@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+    }
+    body {
+      background: #111;
+      color: #ddd;
+      font-family: monospace;
+      font-size: 13px;
+    }
+    #status {
+      padding: 6px 8px;
+      white-space: pre-line;
+      background: rgba(0,0,0,0.6);
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 2;
+    }
+    #preview {
+      width: 100vw;
+      height: 100vh;
+      object-fit: contain;
+      display: block;
+      background: #000;
+    }
+    #picker {
+      padding: 16px;
+    }
+    #picker h2 {
+      font-size: 14px;
+      margin: 0 0 12px;
+    }
+    #sourceGrid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .source-item {
+      width: 220px;
+      cursor: pointer;
+      border: 2px solid transparent;
+      border-radius: 4px;
+      padding: 6px;
+    }
+    .source-item:hover {
+      border-color: #5cf;
+      background: rgba(255,255,255,0.05);
+    }
+    .source-item img {
+      width: 100%;
+      display: block;
+      background: #000;
+      border-radius: 2px;
+    }
+    .source-item .name {
+      margin-top: 4px;
+      font-size: 11px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  </style>
+</head>
+<body>
+  <div id="picker">
+    <h2>Select the window/screen to capture (click one):</h2>
+    <div id="sourceGrid"></div>
+  </div>
+  <div id="status" style="display:none">starting...</div>
+  <video id="preview" autoplay muted style="display:none"></video>
+  <canvas id="full" style="display:none"></canvas>
+  <script src="capture-renderer.js"></script>
+</body>
+</html>
